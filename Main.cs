@@ -1,11 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using static ColdClearNET.Interface;
-
-// ReSharper disable UnusedMember.Global
-// ReSharper disable InconsistentNaming
 
 namespace ColdClearNET
 {
@@ -27,9 +23,26 @@ namespace ColdClearNET
             ptr = cc_launch_async(options, weights);
         }
 
+        /* Launches a bot thread with a predefined field, empty queue, remaining pieces in the bag, hold piece,
+         * back-to-back status, and combo count. This allows you to start CC from the middle of a game.
+         * 
+         * The bag_remain parameter is a bit field indicating which pieces are still in the bag. Each bit
+         * correspond to CCPiece enum. This must match the next few pieces provided to CC via
+         * cc_add_next_piece_async later.
+         * 
+         * The field parameter is a pointer to the start of an array of 400 booleans in row major order,
+         * with index 0 being the bottom-left cell.
+         * 
+         * The hold parameter is a pointer to the current hold piece, or `NULL` if there's no hold piece now.
+         */
+        public ColdClear(in CCOptions options, in CCWeights weights, bool[] field, uint bag_remain, CCPiece? hold, bool b2b, uint combo)
+        {
+            ptr = cc_launch_with_board_async(options, weights, field, bag_remain, hold, b2b, combo);
+        }
+
         /// <summary>
         /// 기본 옵션과 무게를 사용하여 빈 보드, 빈 대기열 및 가방의 7개 피스각 모두 포함된 봇 쓰레드를 실행<br/>
-        /// 봇 인스턴스가 완료되면 Disposition()을 호출하는 것을 잊지 마십시오.
+        /// 봇 인스턴스가 완료되면 <c>Dispose()</c>을 호출하는 것을 잊지 마십시오.
         /// </summary>
         public ColdClear() : this(GetDefaultOptions(), GetDefaultWeights()) { }
 
@@ -82,7 +95,7 @@ namespace ColdClearNET
         /// 
         /// 봇이 현재의 사고 주기를 끝내고 이동을 공급할 시간을 갖도록 이 기능을 피스가 스폰되기 전의 프레임이라고 부르는 것이 좋다.<br/><br/>
         /// 
-        /// 일단 이동을 선택하면, 봇은 내부 상태를 작품이 올바르게 배치된 결과로 업데이트하고 <c>PollNextMove()</c>.를 호출하여 이동을 이용할 수 있게 된다.
+        /// 일단 이동을 선택하면, 봇은 내부 상태를 작품이 올바르게 배치된 결과로 업데이트하고 <c>PollNextMove()</c>를 호출하여 이동을 이용할 수 있게 된다.
         /// </summary>
         /// <param name="incoming">다음 피스를 배치한 후 봇이 받을 것으로 예상되는 방해 블럭 라인 수</param>
         public void RequestNextMove(uint incoming)
@@ -90,45 +103,39 @@ namespace ColdClearNET
             cc_request_next_move(ptr, incoming);
         }
 
-        /// <summary>
-        /// 이전에 요청한 이동을 봇에서 제공<br/><br/>
-        /// 
-        /// 반환된 이동에는 배치된 피스의 경로와 예상 위치가 모두 포함된다.<br/>
-        /// 반환된 경로는 상당히 좋지만, 예를 들어, 여러분이 하고 있는 게임의 복잡한 움직임을 이용하기 위해 여러분만의 경로파인더를 사용하는 것이 좋을 것이다.<br/><br/>
-        /// 
-        /// 피스를 예상 위치에 배치할 수 없는 경우 <c>Reset()</c>를 호출하여 게임 필드, 연속 상태 및 콤보 값을 재설정해야 한다.
-        /// </summary>
-        /// <param name="move">이동이 제공된 경우 이 기능은 true로 반환되며 이동 매개 변수에서 이동이 반환된다. 그렇지 않으면 이 함수는 거짓을 반환한다.</param>
-        /// <returns>이동이 제공된 경우 이 기능은 true로 반환되며 이동 매개 변수에서 이동이 반환된다. 그렇지 않으면 이 함수는 거짓을 반환한다.</returns>
-        public bool PollNextMove(out CCMove move)
+        /* Checks to see if the bot has provided the previously requested move yet.
+         * 
+         * The returned move contains both a path and the expected location of the placed piece. The
+         * returned path is reasonably good, but you might want to use your own pathfinder to, for
+         * example, exploit movement intricacies in the game you're playing.
+         * 
+         * If the piece couldn't be placed in the expected location, you must call `cc_reset_async` to
+         * reset the game field, back-to-back status, and combo values.
+         * 
+         * If `plan` and `plan_length` are not `NULL` and this function provides a move, a placement plan
+         * will be returned in the array pointed to by `plan`. `plan_length` should point to the length
+         * of the array, and the number of plan placements provided will be returned through this pointer.
+         * 
+         * If the move has been provided, this function will return `CC_MOVE_PROVIDED`.
+         * If the bot has not produced a result, this function will return `CC_WAITING`.
+         * If the bot has found that it cannot survive, this function will return `CC_BOT_DEAD`
+         */
+        public CCBotPollStatus PollNextMove(out CCMove move, out CCPlanPlacement[] plan, ref uint plan_length)
         {
-            return cc_poll_next_move(ptr, out move);
+            return cc_poll_next_move(ptr, out move, out plan, ref plan_length);
         }
 
-        /// <summary>
-        /// 봇에게 가능한 한 빨리 이동을 제공하도록 요청하고 이를 반환<br/><br/>
-        ///
-        /// 대부분의 경우, "가능한 한 빨리"는 매우 짧은 시간이며, 제공된 사고력의 하한선이 아직 도달하지 않았거나, 또는 봇이 다음 피스에 대한 정보가 부족하기 때문에 아직 움직임을 제공할 수 없는 경우에만 더 길다.<br/><br/>
-        /// 
-        /// 예를 들어, 제로피스 프리뷰와 홀드가 활성화된 게임에서, 봇은 자신이 어떤 작품을 들고 있는지 알 수 없기 때문에 결코 첫 번째 동작을 제공할 수 없을 것이다. 또 다른 예: 제로피스 프리뷰와 홀드 기능이 비활성화된 게임에서, 봇은 현재 피스가 생성된 후에만 이동할 수 있으며, 당신은 <c>AddPiece()</c>또는 <c>AddPieces()</c>를 사용하여 해당 피스 정보를 봇에게 제공한다.
-        /// </summary>
-        /// <param name="incoming">다음 피스를 배치한 후 봇이 받을 것으로 예상되는 방해 블럭 라인 수</param>
-        /// <param name="pollInterval">다음 이동 준비 여부를 확인할 때 까지의 간격</param>
-        /// <returns>다음 움직임 정보</returns>
-        public async Task<CCMove> GetNextMoveAsync(uint incoming, uint pollInterval = 25)
+        /* This function is the same as `cc_poll_next_move` except when `cc_poll_next_move` would return
+         * `CC_WAITING` it instead waits until the bot has made a decision.
+         *
+         * If the move has been provided, this function will return `CC_MOVE_PROVIDED`.
+         * If the bot has found that it cannot survive, this function will return `CC_BOT_DEAD`
+         */
+        public CCBotPollStatus BlockNextMove(out CCMove move, out CCPlanPlacement[] plan, ref uint plan_length)
         {
-            cc_request_next_move(ptr, incoming);
-            while (true)
-            {
-                if (cc_poll_next_move(ptr, out var move)) return move;
-                await Task.Delay((int)pollInterval);
-            }
+            return cc_block_next_move(ptr, out move, out plan, ref plan_length);
         }
 
-        /// <summary>
-        /// 가능한 모든 피스 배치 시퀀스가 사망으로 귀결되거나 봇 쓰레드가 충돌할 경우 true를 반환
-        /// </summary>
-        public bool IsDead => cc_is_dead_async(ptr);
 
         private void ReleaseUnmanagedResources()
         {
@@ -182,13 +189,14 @@ namespace ColdClearNET
 
     public enum CCPiece : uint
     {
-        CC_I,
-        CC_T,
-        CC_O,
-        CC_S,
-        CC_Z,
-        CC_L,
-        CC_J
+        CC_I, CC_O, CC_T, CC_L, CC_J, CC_S, CC_Z
+    }
+
+    public enum CCTspinStatus : uint
+    {
+        CC_NONE_TSPIN_STATUS,
+        CC_MINI,
+        CC_FULL
     }
 
     public enum CCMovement : uint
@@ -208,6 +216,30 @@ namespace ColdClearNET
         CC_0G,
         CC_20G,
         CC_HARD_DROP_ONLY
+    }
+
+    public enum CCBotPollStatus : uint
+    {
+        CC_MOVE_PROVIDED,
+        CC_WAITING,
+        CC_BOT_DEAD
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CCPlanPlacement
+    {
+        public CCPiece piece;
+        public CCTspinStatus tspin;
+
+        /* Expected cell coordinates of placement, (0, 0) being the bottom left */
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public byte[] expected_x;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public byte[] expected_y;
+
+        /* Expected lines that will be cleared after placement, with -1 indicating no line */
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public int[] cleared_lines;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -253,6 +285,7 @@ namespace ColdClearNET
         public CCMovementMode mode;
         [MarshalAs(UnmanagedType.U1)] public bool use_hold;
         [MarshalAs(UnmanagedType.U1)] public bool speculate;
+        [MarshalAs(UnmanagedType.U1)] public bool pcloop;
         public uint min_nodes;
         public uint max_nodes;
         public uint threads;
